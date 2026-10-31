@@ -195,6 +195,7 @@ body.dragging,body.dragging *{cursor:grabbing!important;-webkit-user-select:none
       <span class="sp"></span>
       <span class="role" id="role">Connecting…</span><button class="hbtn" id="acct" data-act="account" hidden>Account</button>
     </div>
+    <div id="demo-banner" hidden></div>
     <nav class="tabs" id="tabs" aria-label="Sections"></nav>
   </div>
 </header>
@@ -204,6 +205,7 @@ body.dragging,body.dragging *{cursor:grabbing!important;-webkit-user-select:none
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script src="config.js"></script>
+<script src="demo.js"></script>
 <script>
 (function(){
 const P={mat:'data/shop/materials',lot:'data/shop/lots',prod:'data/shop/products',bat:'data/shop/batches',mov:'data/shop/moves',exp:'data/shop/expected',req:'data/shop/requests',cnt:'data/shop/counts',cfg:'data/shop/config',lab:'data/shop/labels',sds:'data/shop/sds',
@@ -1460,7 +1462,24 @@ function noAccessView(email){
   $('tabs').innerHTML='';
   $('main').innerHTML=`<section class="panel login"><h2>No access yet</h2><p>You're signed in as <b>${esc(email)}</b>, but a manager hasn't given this login a role yet.</p><p class="muted small">Ask your manager to open Setup → Users and choose a role for you.</p><div class="row"><button class="btn" data-act="signOut">Sign out</button></div></section>`}
 function setupErrorView(){
-  $('main').innerHTML=`<section class="panel login"><h2>Setup needed</h2><p>This copy of the system isn't connected to its database yet.</p><p class="muted small">Open <span class="code">config.js</span> and fill in the Supabase project URL and anon key, as described in the setup guide.</p></section>`}
+  $('main').innerHTML=`<section class="panel login" style="max-width:540px">
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <span style="font-size:26px">🧪</span>
+      <h2 style="margin:0">Setup or Demo Mode</h2>
+    </div>
+    <p>This copy of the system isn't connected to a Supabase database yet.</p>
+    <div style="background:var(--sunk);border-radius:6px;padding:14px;border:1px solid var(--line);margin:12px 0">
+      <div style="font-weight:600;font-size:14px;margin-bottom:6px">Want to test the full system right now?</div>
+      <p class="small muted" style="margin-bottom:12px;line-height:1.5">You can launch <b>Demo Mode</b> immediately without any database. It comes pre-loaded with authentic Sure Seal materials, products, batches, lots, confidential formulas, and an interactive role switcher (Owner, Manager, Production, Warehouse, Office).</p>
+      <button class="btn pri" id="btn-start-demo" style="width:100%;font-size:14px;padding:9px">▶ Launch Demo Mode (No Database)</button>
+    </div>
+    <p class="muted small" style="margin-top:12px"><b>To connect your real database:</b> open <span class="code">config.js</span> and fill in the Supabase project URL and anon key, as described in the setup guide.</p>
+  </section>`;
+  $('btn-start-demo')?.addEventListener('click',()=>{
+    try{localStorage.setItem('ss-demo','1')}catch(_){}
+    location.reload();
+  });
+}
 function vAccount(){
   return `<div><h2>Your account</h2></div>
   <section class="panel"><div class="sheet-head"><div><small>Name</small><b>${esc(S.who)}</b></div><div><small>Login</small><b>${esc(S.email)}</b></div><div><small>Role</small><b>${esc(ROLE_NAME[S.role]||S.role)}</b></div></div>
@@ -2330,8 +2349,301 @@ document.addEventListener('change',async e=>{const t=e.target;if(t.dataset.sp===
 try{S.site=localStorage.getItem('ss-site')||''}catch(_){}
 try{const s=localStorage.getItem('ss-tab');if(s&&TABS.some(t=>t[0]===s))S.tab=s}catch(_){}
 const h=(location.hash||'').slice(1);if(TABS.some(t=>t[0]===h))S.tab=h;
+function bootDemoMode(cfg){
+  S.isDemo=true;
+  const store=window.SS_DEMO.loadDemoStore();
+  const saveStore=()=>window.SS_DEMO.saveDemoStore(store);
+  const deepCl=o=>JSON.parse(JSON.stringify(o));
+  const deepMg=(target,source)=>{
+    const out=Array.isArray(target)?[...target]:{...target};
+    for(const k of Object.keys(source||{})){
+      const sv=source[k];
+      if(sv&&typeof sv==='object'&&!Array.isArray(sv)&&out[k]&&typeof out[k]==='object'&&!Array.isArray(out[k])){
+        out[k]=deepMg(out[k],sv);
+      }else{out[k]=sv}
+    }
+    return out;
+  };
+
+  function makeMockDb(){
+    const listeners={};
+    const notify=t=>{saveStore();(listeners[t]||[]).forEach(f=>f())};
+    const snap=rows=>({docs:rows.map(r=>({id:r.id,exists:true,data:()=>deepCl(r.data||{})})),size:rows.length,empty:!rows.length});
+    function getRows(t,q){
+      let rows=Object.entries(store[t]||{}).map(([id,data])=>({id,data:deepCl(data)}));
+      if(q.order){
+        rows.sort((a,b)=>{
+          const fa=(a.data&&a.data[q.order.f])??a[q.order.f]??'';
+          const fb=(b.data&&b.data[q.order.f])??b[q.order.f]??'';
+          return q.order.dir==='desc'?String(fb).localeCompare(String(fa)):String(fa).localeCompare(String(fb));
+        });
+      }
+      if(q.limit)rows=rows.slice(0,q.limit);
+      return rows;
+    }
+    function query(t,q){
+      return {
+        orderBy:(f,dir)=>query(t,{...q,order:{f,dir}}),
+        limit:k=>query(t,{...q,limit:k}),
+        get:async()=>snap(getRows(t,q)),
+        onSnapshot(next){
+          let alive=true;
+          const send=()=>{if(alive)next(snap(getRows(t,q)))};
+          (listeners[t]=listeners[t]||[]).push(send);
+          setTimeout(send,0);
+          return ()=>{alive=false;listeners[t]=(listeners[t]||[]).filter(f=>f!==send)};
+        }
+      };
+    }
+    function docRef(t,id){
+      return {
+        id,
+        get:async()=>{const item=store[t]&&store[t][id];return {id,exists:!!item,data:()=>item?deepCl(item):undefined}},
+        set:async d=>{if(!store[t])store[t]={};store[t][id]=deepCl(d);notify(t)},
+        update:async patch=>{if(!store[t])store[t]={};if(!store[t][id])store[t][id]={};store[t][id]=deepMg(store[t][id],deepCl(patch));notify(t)},
+        delete:async()=>{if(store[t]&&store[t][id]){delete store[t][id];notify(t)}}
+      };
+    }
+    return {
+      collection(path){
+        const t=TBL[path];
+        if(!t)throw new TypeError('Unknown collection '+path);
+        return {
+          ...query(t,{}),
+          path,
+          doc:id=>docRef(t,id||rid()),
+          add:async d=>{const id=rid();await docRef(t,id).set(d);return {id}}
+        };
+      }
+    };
+  }
+
+  const mockSb={
+    auth:{
+      getSession:async()=>({data:{session:{user:{id:S.uid,email:S.email}}}}),
+      signInWithPassword:async({email})=>{
+        const list=Object.values(store.profiles||{});
+        const p=list.find(x=>x.email.toLowerCase()===email.toLowerCase())||list[0];
+        setDemoUser(p.role);
+        return {error:null};
+      },
+      updateUser:async()=>({error:null}),
+      signOut:async()=>{window.SS_DEMO.exitDemo()},
+      onAuthStateChange:()=>({data:{subscription:{unsubscribe:()=>{}}}})
+    },
+    from:(table)=>({
+      select:(cols)=>({
+        order:async()=>({data:Object.values(store[table]||{}),error:null}),
+        eq:(col,val)=>({
+          maybeSingle:async()=>{
+            const list=Object.values(store[table]||{});
+            const found=list.find(x=>x[col]===val);
+            return {data:found?deepCl(found):null,error:null};
+          }
+        })
+      }),
+      update:(patch)=>({
+        eq:async(col,val)=>{
+          if(store[table]){
+            const item=Object.values(store[table]).find(x=>x[col]===val);
+            if(item){Object.assign(item,patch);saveStore()}
+          }
+          return {error:null};
+        }
+      })
+    }),
+    storage:{
+      from:()=>({
+        createSignedUrl:async()=>({data:{signedUrl:''},error:null}),
+        download:async()=>({data:new Blob([''],{type:'image/png'}),error:null}),
+        upload:async()=>({error:null})
+      })
+    },
+    functions:{
+      invoke:async(name,{body})=>{
+        if(name==='admin-users'){
+          if(body.action==='create'){
+            const id='usr_'+Date.now().toString(36);
+            store.profiles[id]={id,name:body.name,email:body.email,role:body.role,active:true,created_at:new Date().toISOString()};
+            saveStore();
+            return {data:{success:true},error:null};
+          }
+          if(body.action==='password')return {data:{success:true},error:null};
+          if(body.action==='remove'){
+            delete store.profiles[body.id];
+            saveStore();
+            return {data:{success:true},error:null};
+          }
+        }
+        return {data:null,error:null};
+      }
+    },
+    rpc:async(fn)=>{
+      if(fn==='formula_brief'){
+        const data=Object.entries(store.formulas||{}).map(([id,d])=>({id,data:{name:d.name,version:d.version,lines:(d.lines||[]).length}}));
+        return {data,error:null};
+      }
+      return {data:null,error:null};
+    }
+  };
+
+  S.sb=mockSb;
+  const db=makeMockDb();
+  S.db=db;
+  S.dl={save:async({filename,data})=>{browserSave(filename,data);return {status:'saved'}}};
+
+  function setDemoUser(role){
+    const list=Object.values(store.profiles||{});
+    let prof=list.find(p=>p.role===role);
+    if(!prof)prof=list.find(p=>p.role==='owner')||{id:'usr_owner',name:'Kevin (Owner)',email:'kevin@sureseal.com.au',role:'owner',active:true};
+    S.role=prof.role;
+    S.uid=prof.id;
+    S.owner=prof.role==='owner';
+    S.admin=S.owner||prof.role==='manager';
+    S.who=prof.name;
+    S.email=prof.email;
+    S.assets=S.admin?{
+      upload:async(file,opt)=>{
+        return new Promise((resolve)=>{
+          const reader=new FileReader();
+          reader.onload=()=>{
+            store._assets=store._assets||{};
+            const path=rid()+'.png';
+            store._assets[path]=reader.result;
+            saveStore();
+            resolve({id:path,url:reader.result,contentType:file.type,sizeBytes:file.size});
+          };
+          reader.onerror=()=>resolve({id:rid(),url:'',contentType:file.type,sizeBytes:file.size});
+          reader.readAsDataURL(file);
+        });
+      }
+    }:null;
+
+    try{localStorage.setItem(window.SS_DEMO.ROLE_KEY,prof.role)}catch(_){}
+    $('role').textContent=ROLE_NAME[S.role]+' (Demo)';
+    $('acct').hidden=false;
+    $('acct').textContent=S.who;
+    $('role').title=S.admin?'You can see formulas, costs and ingredient names':'Formulas and costs are hidden from this login';
+
+    const sel=$('demo-role-select');
+    if(sel&&sel.value!==S.role)sel.value=S.role;
+  }
+
+  const savedRole=localStorage.getItem(window.SS_DEMO.ROLE_KEY)||'owner';
+  setDemoUser(savedRole);
+
+  const demoBanner=$('demo-banner');
+  if(demoBanner){
+    demoBanner.hidden=false;
+    demoBanner.innerHTML=`
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:8px 12px;margin:6px 0 10px 0;background:color-mix(in srgb,var(--warn) 10%,var(--surface));border:1px solid color-mix(in srgb,var(--warn) 35%,var(--line));border-radius:6px;flex-wrap:wrap">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span class="pill warn" style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px">🧪 Demo Mode (No Database)</span>
+          <span class="small" style="color:var(--ink);font-weight:500">Test role view:</span>
+          <select id="demo-role-select" style="font-size:12.5px;padding:3px 8px;border-radius:4px;width:auto;min-width:200px;background:var(--surface);color:var(--ink)">
+            <option value="owner" ${S.role==='owner'?'selected':''}>👑 Owner (Kevin — Formulas & Costs)</option>
+            <option value="manager" ${S.role==='manager'?'selected':''}>📋 Manager (Costs & Batches — No Formulas)</option>
+            <option value="production" ${S.role==='production'?'selected':''}>🏭 Production (Batch Sheets & QC)</option>
+            <option value="warehouse" ${S.role==='warehouse'?'selected':''}>📦 Warehouse (Receiving & Stock)</option>
+            <option value="office" ${S.role==='office'?'selected':''}>💼 Office (Orders & Forecast)</option>
+          </select>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="btn sm" id="btn-reset-demo" title="Reset all demo changes back to sample records">Reset Demo Data</button>
+          <button class="btn sm" id="btn-exit-demo" title="Exit demo mode">Exit Demo</button>
+        </div>
+      </div>
+    `;
+
+    $('demo-role-select')?.addEventListener('change',(e)=>{
+      const newRole=e.target.value;
+      setDemoUser(newRole);
+      if(!tabAllowed(S.tab)||(!S.admin&&['formulas','costing','forecast'].includes(S.tab))||(S.tab==='formulas'&&!S.owner)){
+        S.tab='overview';
+      }
+      renderTabs();
+      refilter();
+      render();
+      const roleMsgs={
+        owner:'Switched to Owner (Kevin). You have full access to confidential formulas, product costs, and system settings.',
+        manager:'Switched to Manager. You can plan batches, see costs, and manage stock. Formulas are hidden.',
+        production:'Switched to Production Tablet. You can run batch sheets, dispense materials, and record QC.',
+        warehouse:'Switched to Warehouse. You can receive shipments, dispatch orders, and count stock.',
+        office:'Switched to Office. You can view expected deliveries, enter requests, and generate reports.'
+      };
+      toast(roleMsgs[newRole]||`Role changed to ${ROLE_NAME[newRole]}.`);
+    });
+
+    $('btn-reset-demo')?.addEventListener('click',()=>{
+      if(confirm('Reset demo data back to default sample records? Any test batches, receipts or adjustments will be restored to original samples.')){
+        window.SS_DEMO.resetData();
+      }
+    });
+
+    $('btn-exit-demo')?.addEventListener('click',()=>{
+      window.SS_DEMO.exitDemo();
+    });
+  }
+
+  if(!tabAllowed(S.tab)||(!S.admin&&['formulas','costing','forecast'].includes(S.tab))||(S.tab==='formulas'&&!S.owner)){
+    S.tab='overview';
+  }
+  renderTabs();
+
+  const allKeys=['lab','sds','req','cnt','cfg','exp','mat','lot','prod','bat','smat','sprod','sales','form'];
+  let left=allKeys.length+1;
+  const done=()=>{
+    if(--left===0){
+      S.ready=true;
+      render();
+    }else if(S.ready){
+      schedule();
+    }
+  };
+
+  allKeys.forEach(k=>{
+    let first=true;
+    db.collection(P[k]).onSnapshot(s=>{
+      const o={};
+      s.docs.forEach(d=>o[d.id]={id:d.id,...d.data()});
+      if(SITE_KEYS.includes(k)){
+        R[k]=o;
+        const f={};
+        vals(o).forEach(x=>{if(onSite(x))f[x.id]=x});
+        S[k]=f;
+      }else{
+        S[k]=o;
+      }
+      if(k==='cfg'){
+        applyBrand();
+        refilter();
+      }
+      if(first){
+        first=false;
+        done();
+      }else{
+        schedule();
+      }
+    });
+  });
+
+  let firstM=true;
+  db.collection(P.mov).orderBy('at','desc').limit(500).onSnapshot(s=>{
+    R.mov=s.docs.map(d=>({id:d.id,...d.data()}));
+    S.mov=R.mov.filter(onSite);
+    if(firstM){
+      firstM=false;
+      done();
+    }else{
+      schedule();
+    }
+  });
+}
+
 (async()=>{
   const cfg=window.SS_CONFIG||{};
+  const isDemo=cfg.demo===true||((!cfg.supabaseUrl||/YOUR-/.test(cfg.supabaseUrl))&&localStorage.getItem('ss-demo')==='1');
+  if(isDemo&&window.SS_DEMO){bootDemoMode(cfg);return}
   if(!window.supabase||!cfg.supabaseUrl||/YOUR-/.test(cfg.supabaseUrl)){$('role').textContent='Not connected';setupErrorView();return}
   const sb=window.supabase.createClient(cfg.supabaseUrl,cfg.supabaseAnonKey,{auth:{persistSession:true,autoRefreshToken:true}});S.sb=sb;
   const {data:{session}}=await sb.auth.getSession();
