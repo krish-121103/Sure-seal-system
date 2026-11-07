@@ -10,7 +10,7 @@
 // 2. Fill in your project URL and anon key from Supabase (Project Settings → API).
 // 3. NEVER put the service_role key here.
 window.SS_CONFIG = {
-  supabaseUrl: 'https://YOUR-PROJECT-ID.supabase.co',
-  supabaseAnonKey: 'YOUR-ANON-PUBLIC-KEY',
-  demo: true
+  supabaseUrl: 'https://bojbisgopighnssvpbas.supabase.co',
+  supabaseAnonKey: 'sb_publishable_LrIlERY3ANz_B35ZcN5NhA_1sJzEpbN',
+  demo: false
 };
